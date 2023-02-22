@@ -126,6 +126,7 @@ instance Binary TiffHeader where
 data TiffPlanarConfiguration
   = PlanarConfigContig    -- = 1
   | PlanarConfigSeparate  -- = 2
+  deriving (Show)
 
 planarConfgOfConstant :: Word32 -> Get TiffPlanarConfiguration
 planarConfgOfConstant 0 = pure PlanarConfigContig
@@ -142,7 +143,9 @@ data TiffCompression
   | CompressionModifiedRLE    -- 2
   | CompressionLZW            -- 5
   | CompressionJPEG           -- 6
+  | CompressionJPEGNew        -- 7
   | CompressionPackBit        -- 32273
+  deriving (Show)
 
 data IfdType
   = TypeByte
@@ -201,7 +204,7 @@ instance BinaryParam Endianness ExifTag where
 data Predictor
   = PredictorNone                   -- 1
   | PredictorHorizontalDifferencing -- 2
-  deriving Eq
+  deriving (Eq, Show)
 
 predictorOfConstant :: Word32 -> Get Predictor
 predictorOfConstant 1 = pure PredictorNone
@@ -244,6 +247,7 @@ instance BinaryParam (Endianness, Int, ImageFileDirectory) ExifData where
 
       getVec count = V.replicateM (fromIntegral count)
 
+      immediateBytes :: Word32 -> [Word8]
       immediateBytes ofs =
         let bytes = [fromIntegral $ (ofs .&. 0xFF000000) `unsafeShiftR` (3 * 8)
                     ,fromIntegral $ (ofs .&. 0x00FF0000) `unsafeShiftR` (2 * 8)
@@ -384,7 +388,7 @@ data TiffSampleFormat
   | TiffSampleInt
   | TiffSampleFloat
   | TiffSampleUnknown
-  deriving Eq
+  deriving (Eq, Show)
 
 unpackSampleFormat :: Word32 -> Get TiffSampleFormat
 unpackSampleFormat v = case v of
@@ -448,6 +452,7 @@ data TiffColorspace
   | TiffCMYK             -- ^ 5
   | TiffYCbCr            -- ^ 6
   | TiffCIELab           -- ^ 8
+  deriving (Show)
 
 
 packPhotometricInterpretation :: TiffColorspace -> Word16
@@ -477,6 +482,7 @@ data ExtraSample
   = ExtraSampleUnspecified       -- ^ 0
   | ExtraSampleAssociatedAlpha   -- ^ 1
   | ExtraSampleUnassociatedAlpha -- ^ 2
+  deriving (Show)
 
 codeOfExtraSample :: ExtraSample -> Word16
 codeOfExtraSample v = case v of

@@ -6,6 +6,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE CPP #-}
+{-# LANGUAGE RankNTypes #-}
 -- | Module implementing TIFF decoding.
 --
 -- Supported compression schemes:
@@ -32,6 +33,9 @@ module Codec.Picture.Tiff( decodeTiff
                          , TiffSaveable
                          , encodeTiff
                          , writeTiff
+                         , TiffInfo(..)
+                         , unpack
+                         , Unpackable(..)
                          ) where
 
 #if !MIN_VERSION_base(4,8,0)
@@ -46,7 +50,8 @@ import Control.Monad.Writer.Strict( execWriter, tell, Writer )
 import Data.Int( Int8 )
 import Data.Word( Word8, Word16, Word32 )
 import Data.Bits( (.&.), (.|.), unsafeShiftL, unsafeShiftR )
-import Data.Binary.Get( Get )
+import Data.Binary (get)
+import Data.Binary.Get( Get, runGetOrFail )
 import Data.Binary.Put( runPut )
 
 import qualified Data.Vector as V
@@ -67,6 +72,9 @@ import Codec.Picture.Gif.Internal.LZW
 import Codec.Picture.Tiff.Internal.Types
 import Codec.Picture.Tiff.Internal.Metadata
 import Codec.Picture.VectorByteConversion( toByteString )
+import Data.Kind (Type)
+import Data.Machine
+import Control.Monad.Trans.Class
 
 data TiffInfo = TiffInfo
   { tiffHeader             :: TiffHeader
@@ -209,7 +217,7 @@ uncompressAt CompressionLZW =  \str outVec _stride writeIndex (offset, size) -> 
 uncompressAt _ = error "Unhandled compression"
 
 class Unpackable a where
-    type StorageType a :: *
+    type StorageType a :: Type
 
     outAlloc :: a -> Int -> ST s (M.STVector s (StorageType a))
 
@@ -228,6 +236,15 @@ class Unpackable a where
                         -> Int  -- ^ Stride
                         -> M.STVector s (StorageType a) -- ^ Final buffer
                         -> ST s ()
+  
+    allocStrip :: a    -- ^ Type witness, just for the type checker.
+               -> Endianness
+               -> M.STVector s Word8 -- ^ Temporary buffer handling decompression.
+               -> Int  -- ^ Line size in pixels
+               -> Int  -- ^ Write index, in bytes
+               -> Word32  -- ^ size, in bytes
+               -> Int  -- ^ Stride
+               -> ST s (VS.Vector (StorageType a))
 
 -- | The Word8 instance is just a passthrough, to avoid
 -- copying memory twice
@@ -481,6 +498,95 @@ instance Unpackable YCbCrSubsampling where
 
               return $ readIdx + blockSize
 
+data TiffStrip s = TiffStrip {
+  stripIndex :: Int
+, stripSize :: Word32
+, stripStride :: Int
+, stripData :: VS.Vector Word8
+}
+
+tiffStrips :: forall comp s. ( Unpackable comp, M.Storable (StorageType comp) )
+             => comp -> B.ByteString -> TiffInfo -> SourceT (ST s) (TiffStrip s)
+tiffStrips comp str nfo = construct $ do
+  let width = fromIntegral $ tiffWidth nfo
+      height = fromIntegral $ tiffHeight nfo
+      -- Use the sample count from the tiff info unless
+      -- it is 0, otherwise
+      sampleCount = if tiffSampleCount nfo /= 0
+        then fromIntegral $ tiffSampleCount nfo
+        else V.length $ tiffBitsPerSample nfo
+
+      rowPerStrip = fromIntegral $ tiffRowPerStrip nfo
+      endianness = hdrEndianness $ tiffHeader nfo
+
+      stripCount = V.length $ tiffOffsets nfo
+      compression = tiffCompression nfo
+
+  _outVec <- lift $ outAlloc comp $ width * height * sampleCount
+  tempVec <- lift $ allocTempBuffer comp _outVec (rowPerStrip * width * sampleCount)
+  -- let mutableImage = MutableImage
+  --                  { mutableImageWidth = fromIntegral width
+  --                  , mutableImageHeight = fromIntegral height
+  --                  , mutableImageData = outVec
+  --                  }
+  --     merge = mergeBackTempBuffer comp endianness tempVec (width * sampleCount)
+
+          -- mergeBackTempBuffer :: a    -- ^ Type witness, just for the type checker.
+          --               -> Endianness
+          --               -> M.STVector s Word8 -- ^ Temporary buffer handling decompression.
+          --               -> Int  -- ^ Line size in pixels
+          --               -> Int  -- ^ Write index, in bytes
+          --               -> Word32  -- ^ size, in bytes
+          --               -> Int  -- ^ Stride
+          --               -> M.STVector s (StorageType a) -- ^ Final buffer
+          --               -> ST s ()
+
+  case tiffPlaneConfiguration nfo of
+    PlanarConfigContig -> V.mapM_ unpacker sizes
+        where unpacker (idx, stripSampleCount, offset, packedSize) = do
+                  let (writeIdx, tempStride)  = offsetStride comp idx 1
+                  _ <- lift $ uncompressAt compression str tempVec tempStride
+                                    writeIdx (offset, packedSize)
+                  let typ :: M.MVector s a -> a
+                      typ = const undefined
+                      sampleSize = sizeOf (typ _outVec)
+                  mv <- lift $ VS.freeze tempVec
+                  yield $ TiffStrip idx (fromIntegral $ stripSampleCount * sampleSize) 1 mv
+
+
+
+              fullStripSampleCount = rowPerStrip * width * sampleCount
+              startWriteOffset = V.generate stripCount (fullStripSampleCount *)
+              stripSampleCounts = V.map strip startWriteOffset
+                  where
+                      strip start = min fullStripSampleCount (width * height * sampleCount - start)
+
+              sizes = V.zip4 startWriteOffset stripSampleCounts
+                             (tiffOffsets nfo) (tiffStripSize nfo)
+
+    PlanarConfigSeparate -> V.mapM_ unpacker sizes
+        where unpacker (idx, offset, size) = do
+                  let (writeIdx, tempStride) = offsetStride comp idx stride
+                  _ <- lift $ uncompressAt compression str tempVec tempStride
+                                    writeIdx (offset, size)
+                  mv <- lift $ VS.freeze tempVec
+                  yield $ TiffStrip idx size stride mv
+
+              stride = V.length $ tiffOffsets nfo
+              idxVector = V.enumFromN 0 stride
+              sizes = V.zip3 idxVector (tiffOffsets nfo) (tiffStripSize nfo)
+
+--   when (tiffPredictor nfo == PredictorHorizontalDifferencing) $ do
+--     let f _ c1 c2 = c1 + c2
+--     forM_ [0 .. height - 1] $ \y ->
+--       forM_ [1 .. width - 1] $ \x -> do
+--         p <- readPixel mutableImage (x - 1) y
+--         q <- readPixel mutableImage x y
+--         writePixel mutableImage x y $ mixWith f p q
+
+  -- unsafeFreezeImage mutableImage
+  -- pure ()
+
 gatherStrips :: ( Unpackable comp
                 , Pixel pixel
                 , StorageType comp ~ PixelBaseComponent pixel
@@ -489,6 +595,8 @@ gatherStrips :: ( Unpackable comp
 gatherStrips comp str nfo = runST $ do
   let width = fromIntegral $ tiffWidth nfo
       height = fromIntegral $ tiffHeight nfo
+      -- Use the sample count from the tiff info unless
+      -- it is 0, otherwise
       sampleCount = if tiffSampleCount nfo /= 0
         then fromIntegral $ tiffSampleCount nfo
         else V.length $ tiffBitsPerSample nfo
