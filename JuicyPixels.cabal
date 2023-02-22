@@ -137,6 +137,7 @@ Library
                     Codec.Picture.Tiff.Internal.Metadata,
                     Codec.Picture.Tiff.Internal.Types
                     Codec.Picture.Tiff.Internal.NG
+                    Codec.Picture.BitWriter
 
   Ghc-options: -O3 -Wall
   Build-depends: base                >= 4.8     && < 6,
@@ -153,8 +154,7 @@ Library
                  machines
 
   -- Modules not exported by this package.
-  Other-modules: Codec.Picture.BitWriter,
-                 Codec.Picture.InternalHelper,
+  Other-modules: Codec.Picture.InternalHelper,
                  Codec.Picture.VectorByteConversion
 
   Install-Includes: src/Codec/Picture/ConvGraph.hs
