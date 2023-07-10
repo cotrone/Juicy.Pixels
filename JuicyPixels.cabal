@@ -139,8 +139,7 @@ Library
                  containers          >= 0.4.2   && < 0.7
 
   -- Modules not exported by this package.
-  Other-modules: Codec.Picture.BitWriter,
-                 Codec.Picture.InternalHelper,
+  Other-modules: Codec.Picture.InternalHelper,
                  Codec.Picture.VectorByteConversion
 
   Install-Includes: src/Codec/Picture/ConvGraph.hs
