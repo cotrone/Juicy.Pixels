@@ -99,6 +99,7 @@ Library
   Default-Language: Haskell2010
   Exposed-modules:  Codec.Picture,
                     Codec.Picture.Bitmap,
+                    Codec.Picture.BitWriter,
                     Codec.Picture.Gif,
                     Codec.Picture.Png,
                     Codec.Picture.Jpg,
